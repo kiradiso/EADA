@@ -4,18 +4,26 @@ import model
 import data_loader
 import torch
 import torch.nn as nn
-import logger as Log
+# import logger as Log
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
 import numpy as np
 from torch.optim.lr_scheduler import StepLR, LambdaLR
 from torch.autograd import Variable
 
+
+torch.manual_seed(1)
+torch.cuda.manual_seed(1)
 # parameters
-T_name = 'dslr'
-S_name = 'amazon'
-dataset_path = "./office31_decaf7"
-image_path = "./office_caltech_10"
+"""
+ For the Office-31 dataset, the S/T name should like : 'amazon/images', image_path is "Original_images"
+ For the Office-Caltech dataset, the S/T name should like : 'amazon', image_path is "office_caltech_10"
+ the datasets can be downloaded in the http as readme.txt showed.
+"""
+S_name = 'webcam'
+T_name = 'caltech'
+# dataset_path = "./office31_decaf7"
+image_path = "office_caltech_10"
 
 use_gpu = True
 full_test = True
@@ -29,7 +37,7 @@ use_ls = False  # use least square loss
 # slope_lrelu = 1e-2
 # tmp = 3
 # lambda_gp = 10 # gradient penalty for w/loss sensitive GAN
-use_tensorboard = True
+use_tensorboard = False
 tb_path = "./log_base"
 ndr_path = "./acc/max.txt"
 train_test_split = False # whether split train and test set
@@ -39,7 +47,7 @@ inp_feature_size = 4096  # if use features as input , show the features num
 c_size = [512]
 gd_size = [1024, 1024]
 feature_size = 256
-class_num = 10   # close set problem
+class_num = 31   # close set problem
 train_test_pp = 10
 n_c = 3
 lr_g = 0.01
@@ -47,8 +55,8 @@ lr_d = 0.01
 lr_c = 0.01
 lr_dec = 0.01
 lambda_dec = 0.5
-lambda_cnf = 0
-epoch = 3000
+lambda_cnf = 0.5
+epoch = 6000
 show_step = 100
 test_step = 200
 
@@ -100,11 +108,6 @@ def get_norm_gradient_penalty(net, x, gamma, cuda):
 
     output = net(x)
     gradOutput = torch.ones(output.size()).cuda() if cuda else torch.ones(output.size())
-    # torch.autograd.grad does not accumuate the gradients into the .grad attributes
-    # It instead returns the gradients as Variable tuples.
-    # torch.autograd.grad is a function that takes in [outputs, list of inputs (for which you want gradients)],
-    # and returns the gradients wrt. these inputs as a tuple, rather than accumulating the gradients into
-    #  the .grad attributes.
     gradient = \
     torch.autograd.grad(outputs=output, inputs=x, grad_outputs=gradOutput, create_graph=True, retain_graph=True,
                         only_inputs=True)[0]
@@ -235,8 +238,9 @@ for step in range(epoch):
     C_scheduler.step()
     if use_gyd:
         G_yd_scheduler.step()
-    lambda_d = 0.2
-    lambda_g = 0.1 * (2 / (1 + math.exp(-step / epoch)) - 1)  # 0.1似乎太小 ->0.25
+    lambda_d = 0.6
+    # lambda_g = 0.25* (2 / (1 + math.exp(-step / epoch)) - 1)  # 0.1似乎太小 ->0.25
+    lambda_g = 0.25
     try:
         x_s, y_s = next(s_train_iter)
     except StopIteration:
@@ -284,35 +288,6 @@ for step in range(epoch):
         gyd_d_loss = lambda_d*(domain_clf_loss(ydm_s, source_label) + domain_clf_loss(ydm_t, target_label))
         gyd_d_loss.backward()
         G_yd_optim.step()
-
-    # if use_gyd:
-    #     # Gyd
-    #     G_yd.zero_grad()
-    #     onehot_label.zero_()
-    #     onehot_label.scatter_(1, y_s.view(-1, 1), 1)
-    #     ydm_s = G_yd(torch.cat([feature_s_d, onehot_label], 1))
-    #     ydm_t = [None for i in range(class_num)]
-    #     for i in range(class_num):
-    #         ydm_t[i] = G_yd(torch.cat([feature_t_d, t_onehot_label[i]], 1))
-    #     if use_gls:
-    #         gyd_d_loss = ydm_s
-    #         for i in range(class_num):
-    #             gyd_d_loss = gyd_d_loss + soft_label_t[:, i]*ydm_t[i]
-    #         gyd_d_loss = gyd_d_loss.mean()
-    #     elif use_ls:
-    #         gyd_d_loss = domain_clf_loss(ydm_s, source_label)
-    #         for i in range(class_num):
-    #             gyd_d_loss = gyd_d_loss + mse_withw(ydm_t[i], soft_label_t[:, i], bound=target_label)
-    #     else:
-    #         gyd_d_loss = domain_clf_loss(ydm_s, source_label)
-    #         for i in range(class_num):
-    #             w_bceloss = nn.BCELoss(weight=soft_label_t[:, i])
-    #             if use_gpu:
-    #                 w_bceloss.cuda()
-    #             gyd_d_loss = gyd_d_loss + w_bceloss(ydm_t[i], target_label)
-    #     gyd_d_loss = lambda_d*gyd_d_loss
-    #     gyd_d_loss.backward()
-    #     G_yd_optim.step()
     if use_dec:
         # Dec
         Dec.zero_grad()
@@ -400,12 +375,12 @@ for step in range(epoch):
                 feature = G_f(x_ts)
                 ys_prob = C(feature)
                 _, ys_pred = torch.max(ys_prob, 1)
-                log_acc = log_acc + v2np((ys_pred == y_ts).float().sum())
-            log_acc = log_acc
+                log_acc = log_acc + v2np((ys_pred == y_ts).float().sum())[0]
+            log_acc = (log_acc/len(s_test_dtl.dataset))*100
             logs.append(log_acc)
             t_info['s_acc'] = log_acc
             print(
-                "***Test*** At step {}".format(step), "the source accuracy is {}".
+                "***Test*** At step {}".format(step), "the source accuracy is {:.2f}%".
                     format(log_acc)
             )
             log_acc = 0
@@ -418,12 +393,12 @@ for step in range(epoch):
                 feature = G_f(x_tt)
                 yt_prob = C(feature)
                 _, yt_pred = torch.max(yt_prob, 1)
-                log_acc = log_acc + v2np((yt_pred == y_tt).float().sum())
-            log_acc = log_acc
+                log_acc = log_acc + v2np((yt_pred == y_tt).float().sum())[0]
+            log_acc = (log_acc/len(t_test_dtl.dataset))*100
             logt.append(log_acc)
             t_info['t_acc'] = log_acc
             print(
-                "the target accuracy is {}".
+                "the target accuracy is {: .2f}%".
                     format(log_acc)
             )
             if use_tensorboard:
